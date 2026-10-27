@@ -119,9 +119,49 @@ pub async fn normalize_input(ctx: &Ctx, input: &str) -> Result<Url> {
     Ok(url)
 }
 
+/// 微信视频号：内容只在微信客户端内的内嵌浏览器里加载，分享链接在普通浏览器里会跳到
+/// 「请在微信客户端打开」。现有能下载它的工具都要在本机装根证书、截获微信客户端自己的加密流量
+/// 才能拿到解密密钥——本项目不做这件事，所以这里给出清楚的说明，而不是走通用嗅探报一个看不懂的错。
+fn is_wechat_channels(url: &Url) -> bool {
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    host == "channels.weixin.qq.com"
+        || host == "finder.video.qq.com"
+        || host.ends_with(".channels.weixin.qq.com")
+        || (host == "support.weixin.qq.com" && url.path().contains("channels"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wechat_channels_detected() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(is_wechat_channels(&u("https://channels.weixin.qq.com/web/pages/feed?v=abc")));
+        assert!(is_wechat_channels(&u("https://finder.video.qq.com/251/xyz")));
+        assert!(!is_wechat_channels(&u("https://www.douyin.com/video/123")));
+        assert!(!is_wechat_channels(&u("https://support.weixin.qq.com/update/")));
+    }
+
+    #[test]
+    fn platform_detection() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert_eq!(detect(&u("https://www.tiktok.com/@a/video/1")), Platform::Tiktok);
+        assert_eq!(detect(&u("https://b23.tv/abc")), Platform::Bilibili);
+        assert_eq!(detect(&u("https://example.com/v.mp4")), Platform::Generic);
+    }
+}
+
 /// 解析作品
 pub async fn extract(ctx: &Ctx, input: &str) -> Result<MediaInfo> {
     let url = normalize_input(ctx, input).await?;
+    if is_wechat_channels(&url) {
+        bail!(
+            "暂不支持微信视频号。视频号的内容只在微信客户端里加载，分享链接在普通浏览器里打不开，\
+             要下载它必须截获微信客户端自己的加密流量来拿解密密钥，本项目不做这件事。\
+             可以在微信里用「长按 → 更多 → 下载」保存到相册后再导出"
+        );
+    }
     let info = match detect(&url) {
         Platform::Douyin => douyin::extract(ctx, &url).await,
         Platform::Tiktok => tiktok::extract(ctx, &url).await,
