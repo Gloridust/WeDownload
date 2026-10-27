@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wd-core", "crates/wd-cli"]
+members = ["crates/wd-core", "crates/wd-cli", "app/rust"]
 
 [workspace.package]
 version = "0.1.0"

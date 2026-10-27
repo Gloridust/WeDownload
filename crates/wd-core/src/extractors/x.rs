@@ -71,7 +71,7 @@ pub async fn extract(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
                     let Some(u) = jstr(var, "url") else { continue };
                     let (w, h) = dims_from_path(&u);
                     let br = ju64(var, "bitrate");
-                    let mut vv = Variant::new(quality_label(w, h, Some("h264"), br), u, "mp4").dims(w, h);
+                    let mut vv = Variant::new(quality_label(w, h, None, None), u, "mp4").dims(w, h);
                     vv.bitrate = br;
                     vv.codec = Some("h264".into());
                     variants.push(vv);

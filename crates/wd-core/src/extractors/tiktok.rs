@@ -93,7 +93,7 @@ pub async fn extract(_ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
                 continue;
             }
             let br = ju64(b, "Bitrate");
-            let mut v = Variant::new(quality_label(w, h, Some(&codec), br), u, "mp4").dims(w, h);
+            let mut v = Variant::new(quality_label(w, h, Some(&codec), None), u, "mp4").dims(w, h);
             v.backup_urls = urls.into_iter().skip(1).collect();
             v.bitrate = br;
             v.size = ju64(b, "PlayAddr.DataSize");

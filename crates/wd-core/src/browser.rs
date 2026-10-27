@@ -113,7 +113,8 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value>>>>>;
 
 /// 一个已启动的浏览器进程 + 到它的 DevTools 连接
 struct Instance {
-    child: Child,
+    /// 接管已在运行的浏览器时为 None
+    child: Option<Child>,
     tx: mpsc::UnboundedSender<Message>,
     pending: Pending,
     /// 按 sessionId 分发的事件订阅
@@ -235,14 +236,63 @@ impl BrowserPool {
 
 async fn shutdown(i: Arc<Instance>) {
     let _ = i.call(None, "Browser.close", json!({})).await;
-    if let Ok(mut inst) = Arc::try_unwrap(i) {
-        let _ = tokio::time::timeout(Duration::from_secs(3), inst.child.wait()).await;
-        let _ = inst.child.kill().await;
+    if let Ok(inst) = Arc::try_unwrap(i) {
+        if let Some(mut child) = inst.child {
+            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+            let _ = child.kill().await;
+        }
     }
+}
+
+fn read_port_file(profile: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(profile.join("DevToolsActivePort")).ok()?;
+    let mut lines = s.lines();
+    let (port, path) = (lines.next()?, lines.next()?);
+    Some(format!("ws://127.0.0.1:{}{}", port.trim(), path.trim()))
 }
 
 async fn launch(exe: &Path, profile: &Path, headless: bool) -> Result<Instance> {
     std::fs::create_dir_all(profile).ok();
+    // 上次退出（或崩溃）时留下的浏览器还在跑：直接接管
+    if let Some(ws) = read_port_file(profile) {
+        if let Ok(inst) = connect(&ws, None).await {
+            tracing::info!("reusing running browser at {ws}");
+            return Ok(inst);
+        }
+    }
+    match spawn_and_wait(exe, profile, headless).await {
+        Ok((child, ws)) => connect(&ws, Some(child)).await,
+        Err(e) => {
+            // 同一档案被一个连不上的旧进程占着（新进程会把请求转交给它然后退出）：结束旧进程再试一次
+            if !kill_profile_owner(profile) {
+                return Err(e);
+            }
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let (child, ws) = spawn_and_wait(exe, profile, headless).await?;
+            connect(&ws, Some(child)).await
+        }
+    }
+}
+
+/// Linux / macOS：读 SingletonLock（指向 "主机名-进程号"），结束那个进程
+fn kill_profile_owner(profile: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(target) = std::fs::read_link(profile.join("SingletonLock")) else { return false };
+        let Some(pid) = target.to_string_lossy().rsplit('-').next().and_then(|p| p.parse::<i32>().ok()) else {
+            return false;
+        };
+        tracing::warn!("killing stale browser {pid} holding the profile");
+        return std::process::Command::new("kill").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = profile;
+        false
+    }
+}
+
+async fn spawn_and_wait(exe: &Path, profile: &Path, headless: bool) -> Result<(Child, String)> {
     let port_file = profile.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&port_file);
 
@@ -269,25 +319,33 @@ async fn launch(exe: &Path, profile: &Path, headless: bool) -> Result<Instance> 
         // 不弹控制台窗口
         cmd.creation_flags(0x0800_0000);
     }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        // 主程序意外退出时浏览器跟着退出，不留下占着档案的孤儿进程
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
     let child = cmd.spawn().with_context(|| format!("启动浏览器失败：{}", exe.display()))?;
 
     // 浏览器启动后把调试端口写进 DevToolsActivePort（第一行端口，第二行 ws 路径）
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let ws_url = loop {
-        if let Ok(s) = std::fs::read_to_string(&port_file) {
-            let mut lines = s.lines();
-            if let (Some(port), Some(path)) = (lines.next(), lines.next()) {
-                break format!("ws://127.0.0.1:{}{}", port.trim(), path.trim());
-            }
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(ws) = read_port_file(profile) {
+            return Ok((child, ws));
         }
         if Instant::now() > deadline {
-            bail!("浏览器没有在 20 秒内就绪（{}）", exe.display());
+            bail!("浏览器没有在 15 秒内就绪（{}）", exe.display());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    }
+}
 
-    let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
+async fn connect(ws_url: &str, child: Option<Child>) -> Result<Instance> {
+    let (ws, _) = tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(ws_url))
         .await
+        .map_err(|_| anyhow!("连接浏览器调试端口超时"))?
         .context("连接浏览器调试端口失败")?;
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();

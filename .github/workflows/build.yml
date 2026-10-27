@@ -1,0 +1,160 @@
+# 跨平台构建与发布。
+# - 推送 v* 标签：三个桌面平台全部构建成功后创建 Release 并上传安装包
+# - 手动触发或提 PR：只构建，产物在 Actions 页面的 Artifacts 里下载
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "doc/**"
+      - "LICENSE"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FLUTTER_VERSION: "3.47.7"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(grep '^version:' app/pubspec.yaml | sed -E 's/version: ([^+]+).*/\1/')-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # 在较老的 22.04 上编译，产物只依赖 glibc 2.34+，新旧发行版都能用
+    runs-on: ubuntu-22.04
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libstdc++-12-dev clang cmake pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: 测试
+        run: cargo test -p wd-core
+      - name: 构建命令行版
+        run: cargo build --release -p wd-cli
+      - name: 构建桌面版
+        working-directory: app
+        run: flutter build linux --release
+      - name: 打包
+        run: |
+          mkdir -p dist
+          strip target/release/wedl
+          D="wedownload-$V-linux-x86_64"
+          cp -a app/build/linux/x64/release/bundle "$D"
+          cp target/release/wedl "$D/"
+          tar -czf "dist/$D.tar.gz" "$D"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: 构建命令行版
+        run: cargo build --release -p wd-cli
+      - name: 构建桌面版
+        working-directory: app
+        run: flutter build windows --release
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $rel = "app\build\windows\x64\runner\Release"
+          Copy-Item target\release\wedl.exe $rel\
+          Compress-Archive -Path "$rel\*" -DestinationPath "dist\wedownload-$env:V-windows-x64-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - name: 构建命令行版（通用二进制）
+        run: |
+          cargo build --release -p wd-cli --target aarch64-apple-darwin
+          cargo build --release -p wd-cli --target x86_64-apple-darwin
+          lipo -create -output wedl target/aarch64-apple-darwin/release/wedl target/x86_64-apple-darwin/release/wedl
+      - name: 构建桌面版
+        working-directory: app
+        run: flutter build macos --release
+      - name: 打包
+        run: |
+          mkdir -p dist dmg
+          cp -R "app/build/macos/Build/Products/Release/WeDownload.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "WeDownload" -srcfolder dmg -ov -format UDZO "dist/wedownload-$V-macos-universal.dmg"
+          C="wedl-$V-macos-universal"
+          mkdir -p "$C" && cp wedl "$C/"
+          tar -czf "dist/$C.tar.gz" "$C"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

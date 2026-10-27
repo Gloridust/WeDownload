@@ -71,7 +71,7 @@ fn parse_note(n: &Value, id: &str, page: &str) -> Result<MediaInfo> {
                 let w = ju64(s, "width").map(|x| x as u32);
                 let h = ju64(s, "height").map(|x| x as u32);
                 let br = ju64(s, "avgBitrate").or_else(|| ju64(s, "videoBitrate"));
-                let mut v = Variant::new(quality_label(w, h, Some(codec), br), https(&u), "mp4").dims(w, h);
+                let mut v = Variant::new(quality_label(w, h, Some(codec), None), https(&u), "mp4").dims(w, h);
                 v.backup_urls = str_list(s, "backupUrls").iter().map(|x| https(x)).collect();
                 v.bitrate = br;
                 v.size = ju64(s, "size");

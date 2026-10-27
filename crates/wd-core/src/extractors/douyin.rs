@@ -34,8 +34,25 @@ pub async fn extract(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
     let id = aweme_id(url).ok_or_else(|| anyhow!("没能从链接里找到抖音作品 id：{url}"))?;
     let page = format!("https://www.douyin.com/video/{id}");
     let mut last_err = None;
-    // 页面偶尔会在第一次请求时拿到空包再自行重试，这里最多换两次页面
-    for _ in 0..2 {
+    // 新的浏览器档案头几次请求常拿到空包（页面会自己重试，但不一定成功）。
+    // 页面已经收到两次空包就提前结束这一轮，重新打开页面，最多三轮。
+    for attempt in 0..3 {
+        if attempt > 0 {
+            // 新档案还没有站点 Cookie（ttwid、UIFID 等），先在首页停留几秒让页面脚本种好再打开作品
+            let _ = ctx
+                .browser
+                .capture(CaptureSpec {
+                    url: "https://www.douyin.com/",
+                    patterns: vec![],
+                    document: false,
+                    media: false,
+                    done: Box::new(|_| false),
+                    timeout: Duration::from_secs(6),
+                })
+                .await;
+        }
+        let empties = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = empties.clone();
         let caps = ctx
             .browser
             .capture(CaptureSpec {
@@ -43,8 +60,13 @@ pub async fn extract(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
                 patterns: vec!["/aweme/v1/web/aweme/detail/".into()],
                 document: false,
                 media: false,
-                done: Box::new(|c| c.body.contains("\"aweme_detail\":{")),
-                timeout: Duration::from_secs(25),
+                done: Box::new(move |c| {
+                    if c.body.contains("\"aweme_detail\":{") {
+                        return true;
+                    }
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= 2
+                }),
+                timeout: Duration::from_secs(20),
             })
             .await?;
         for c in caps.iter().rev() {
@@ -54,13 +76,13 @@ pub async fn extract(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
             }
             if let Some(f) = jarr(&v, "filter_detail").first().or(v.get("filter_detail")) {
                 let reason = jstr(f, "detail_msg").or_else(|| jstr(f, "filter_reason")).unwrap_or_default();
-                last_err = Some(anyhow!("作品不可用：{reason}"));
+                return Err(anyhow!("作品不可用：{reason}"));
             }
         }
-        if last_err.is_some() {
-            break;
-        }
-        last_err = Some(anyhow!("抖音没有返回作品数据（可能触发了验证，稍后再试）"));
+        tracing::info!(attempt, empties = empties.load(std::sync::atomic::Ordering::Relaxed), "douyin: no detail yet, reloading");
+        last_err = Some(anyhow!(
+            "抖音没有返回作品数据（可能触发了验证）。可以在设置里打开「显示解析浏览器窗口」后重试，在弹出的浏览器里完成验证"
+        ));
     }
     Err(last_err.unwrap())
 }
@@ -122,7 +144,7 @@ fn parse_detail(a: &Value, id: &str) -> Result<MediaInfo> {
                 continue;
             }
             let br = ju64(b, "bit_rate");
-            let mut v = Variant::new(quality_label(w, h, Some(codec), br), u, "mp4").dims(w, h);
+            let mut v = Variant::new(quality_label(w, h, Some(codec), None), u, "mp4").dims(w, h);
             v.backup_urls = str_list(b, "play_addr.url_list").into_iter().skip(1).collect();
             v.bitrate = br;
             v.size = ju64(b, "play_addr.data_size");
