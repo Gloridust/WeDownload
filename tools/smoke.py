@@ -17,6 +17,13 @@ import tempfile
 import time
 from pathlib import Path
 
+# Windows 控制台默认 cp1252，打印中文 / emoji 会崩；统一用 UTF-8
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 X_URL = "https://x.com/Twitter/status/1600649710662213632"
 BROWSER_URL = "https://www.instagram.com/natgeo/reel/DehZj9wggt0/"
 
@@ -91,6 +98,11 @@ def main():
     ap.add_argument("--cli", required=True)
     ap.add_argument("--app")
     a = ap.parse_args()
+    # 相对路径（如 macOS 的 lipo 产物 "wedl" 在仓库根目录）转成绝对路径，否则子进程按 PATH 找不到
+    for attr in ("cli", "app"):
+        v = getattr(a, attr)
+        if v and os.path.exists(v):
+            setattr(a, attr, os.path.abspath(v))
     work = Path(tempfile.mkdtemp(prefix="wd-smoke-"))
     results = {"cli": check_cli(a.cli, work)}
     if a.app:
