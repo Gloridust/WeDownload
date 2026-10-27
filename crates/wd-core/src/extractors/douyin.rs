@@ -220,4 +220,28 @@ mod tests {
         assert_eq!(aweme_id(&u("https://www.iesdouyin.com/share/note/7697283722604776745/?x=1")).unwrap(), "7697283722604776745");
         assert_eq!(aweme_id(&u("https://www.douyin.com/jingxuan?modal_id=7697283722604776745")).unwrap(), "7697283722604776745");
     }
+
+    #[test]
+    fn image_post_with_live_photo() {
+        let a = serde_json::json!({
+            "desc": "秋天的银杏 #风景",
+            "author": {"nickname": "某人"},
+            "images": [
+                {"url_list": ["https://p3/a~tplv:q75.webp?x=1", "https://p9/a~tplv:q75.jpeg?x=1"], "width": 1080, "height": 1440},
+                {"url_list": ["https://p3/b.jpeg"], "width": 1080, "height": 1920,
+                 "video": {"play_addr": {"url_list": ["https://v/live.mp4", "https://v2/live.mp4"]}}}
+            ],
+            "video": {"cover": {"url_list": ["https://p3/cover.jpeg"]}, "duration": 0},
+            "music": {"title": "bgm", "play_url": {"url_list": ["https://m/bgm.mp3"]}}
+        });
+        let info = parse_detail(&a, "1").unwrap();
+        assert_eq!(info.title, "秋天的银杏");
+        let kinds: Vec<_> = info.items.iter().map(|i| i.kind).collect();
+        assert_eq!(kinds, [MediaKind::Image, MediaKind::LivePhoto, MediaKind::Image, MediaKind::Audio]);
+        // 优先 jpeg 地址，webp 作备用
+        assert!(info.items[0].variants[0].url.contains(".jpeg"));
+        assert_eq!(info.items[0].variants[0].ext, "jpg");
+        assert_eq!(info.items[1].variants[0].backup_urls, ["https://v2/live.mp4"]);
+        assert_eq!(info.duration_ms, None);
+    }
 }

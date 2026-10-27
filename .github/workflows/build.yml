@@ -72,6 +72,8 @@ jobs:
           D="wedownload-$V-linux-x86_64"
           cp -a app/build/linux/x64/release/bundle "$D"
           cp target/release/wedl "$D/"
+          cp app/linux/packaging/io.github.gloridust.WeDownload.desktop app/linux/packaging/io.github.gloridust.WeDownload.svg "$D/"
+          cp app/linux/packaging/install-local.sh "$D/install.sh"
           tar -czf "dist/$D.tar.gz" "$D"
       - uses: actions/upload-artifact@v4
         with:

@@ -165,9 +165,12 @@ async fn sniff(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
     info.cover = meta_content(&html, "og:image");
     let referer = format!("{}://{}/", url.scheme(), url.host_str().unwrap_or(""));
     let mut urls: Vec<String> = Vec::new();
+    // og:video 经常是播放器页面而不是视频文件（如 Vimeo），确认是视频才要
     for key in ["og:video:secure_url", "og:video:url", "og:video"] {
         if let Some(u) = meta_content(&html, key) {
-            urls.push(u);
+            if is_video_file(ctx, &u).await {
+                urls.push(u);
+            }
         }
     }
     for c in &caps {
@@ -195,4 +198,20 @@ async fn sniff(ctx: &Ctx, url: &Url) -> Result<MediaInfo> {
         bail!("暂不支持这个网站，也没有在页面里嗅探到视频");
     }
     Ok(info)
+}
+
+/// 扩展名是视频，或者 HEAD 响应的类型是 video/*
+async fn is_video_file(ctx: &Ctx, u: &str) -> bool {
+    let ext = ext_from_url(u, "");
+    if ["mp4", "mov", "webm", "m4v", "mkv", "flv"].contains(&ext.as_str()) {
+        return true;
+    }
+    match ctx.http.head(u).send().await {
+        Ok(r) => r
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.starts_with("video/")),
+        Err(_) => false,
+    }
 }

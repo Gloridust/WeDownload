@@ -16,5 +16,5 @@ for s in 16 32 64 128 256 512 1024; do cp "$TMP/$s.png" "$MAC/app_icon_$s.png"; 
 # Linux：窗口图标与 .desktop 用
 mkdir -p "$APP/linux/data"
 cp "$TMP/256.png" "$APP/linux/data/app_icon.png"
-cp logo.svg "$APP/linux/data/io.github.gloridust.WeDownload.svg"
+cp logo.svg "$APP/linux/packaging/io.github.gloridust.WeDownload.svg"
 echo "icons generated"
