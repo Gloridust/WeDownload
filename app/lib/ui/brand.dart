@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 const kAppName = 'WeDownload';
 
-/// 应用图标：蓝紫渐变圆角方形，白色向下箭头落进托盘。
+/// 应用图标：红色渐变圆角方形，白色向下箭头落进托盘。
 /// 改动时同步 tools/icons/logo.svg，再重新生成各平台图标。
 class AppLogo extends StatelessWidget {
   const AppLogo({super.key, this.size = 32});
@@ -26,7 +26,7 @@ class LogoPainter extends CustomPainter {
         ..shader = const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF4F6BFF), Color(0xFF8A5CF6)],
+          colors: [Color(0xFFFF5A64), Color(0xFFEC2F45)],
         ).createShader(rect),
     );
     // 图形按 0–100 的坐标画

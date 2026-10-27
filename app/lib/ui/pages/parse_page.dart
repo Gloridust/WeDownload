@@ -1,215 +1,191 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../src/rust/api/core.dart' as core;
 import '../../src/rust/api/types.dart';
 import '../../state.dart';
 import '../../theme.dart';
 import '../widgets.dart';
 
-/// 解析页：粘贴链接 → 解析 → 勾选条目和清晰度 → 下载
-class ParsePage extends StatefulWidget {
+/// 解析页：空闲时是粘贴入口和最近解析；有结果时像歌单详情——上面是作品信息，下面一行一条媒体。
+class ParsePage extends StatelessWidget {
   const ParsePage({super.key});
 
   @override
-  State<ParsePage> createState() => _ParsePageState();
+  Widget build(BuildContext context) {
+    final parse = AppState.I.parse;
+    return ListenableBuilder(
+      listenable: Listenable.merge([parse, parse.busy]),
+      builder: (context, _) {
+        if (parse.busy.value) return const _Parsing();
+        if (parse.error != null) return _ErrorView(message: parse.error!);
+        final r = parse.result;
+        if (r != null) return _ResultView(info: r);
+        return const _Welcome();
+      },
+    );
+  }
 }
 
-/// 页面切走再回来时保留上一次的解析结果
-class _ParseMemory {
-  static String input = '';
-  static UiMediaInfo? result;
-  static String? error;
-  static Set<int> selected = {};
-  static Map<int, int> variant = {};
-  static bool added = false;
-}
+// ---------------- 空闲 ----------------
 
-class _ParsePageState extends State<ParsePage> {
-  final _input = TextEditingController(text: _ParseMemory.input);
-  final _focus = FocusNode();
-  bool _busy = false;
-  int _seq = 0;
-
-  UiMediaInfo? get _result => _ParseMemory.result;
-
-  @override
-  void initState() {
-    super.initState();
-    AppState.I.clipboardLink.addListener(_onClipboard);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _onClipboard());
-  }
-
-  @override
-  void dispose() {
-    AppState.I.clipboardLink.removeListener(_onClipboard);
-    _ParseMemory.input = _input.text;
-    _input.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  void _onClipboard() {
-    final text = AppState.I.clipboardLink.value;
-    if (text == null || _busy || !mounted) return;
-    AppState.I.clipboardLink.value = null;
-    _input.text = text;
-    _parse();
-  }
+class _Welcome extends StatelessWidget {
+  const _Welcome();
 
   Future<void> _paste() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text?.trim() ?? '';
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
     if (text.isEmpty) {
       AppState.I.notify('剪贴板是空的');
       return;
     }
     AppState.I.ignoreClipboard(text);
-    _input.text = text;
-    _parse();
-  }
-
-  Future<void> _parse() async {
-    final text = _input.text.trim();
-    if (text.isEmpty) return;
-    if (core.findLink(text: text) == null) {
-      setState(() => _ParseMemory.error = '没有在输入里找到链接');
-      return;
-    }
-    final seq = ++_seq;
-    setState(() {
-      _busy = true;
-      _ParseMemory.error = null;
-    });
-    try {
-      final r = await core.extract(input: text);
-      if (seq != _seq || !mounted) return;
-      setState(() {
-        _ParseMemory.result = r;
-        _ParseMemory.added = false;
-        _ParseMemory.variant = {};
-        _ParseMemory.selected = {
-          for (var i = 0; i < r.items.length; i++)
-            if (r.items[i].kind != UiMediaKind.audio) i,
-        };
-      });
-    } catch (e) {
-      if (seq != _seq || !mounted) return;
-      setState(() => _ParseMemory.error = _cleanError(e));
-    } finally {
-      if (seq == _seq && mounted) {
-        setState(() => _busy = false);
-        // 解析期间剪贴板里又来了新链接：接着解析它
-        if (AppState.I.clipboardLink.value != null) _onClipboard();
-      }
-    }
-  }
-
-  Future<void> _download() async {
-    final r = _result;
-    if (r == null || _ParseMemory.selected.isEmpty) return;
-    final picks = [
-      for (final i in _ParseMemory.selected.toList()..sort()) UiPick(item: i, variant: _ParseMemory.variant[i] ?? 0),
-    ];
-    try {
-      await core.enqueue(key: r.key, picks: picks);
-      setState(() => _ParseMemory.added = true);
-      AppState.I.notify('已加入下载队列（${picks.length} 项）');
-    } catch (e) {
-      AppState.I.notify(_cleanError(e));
-    }
+    AppState.I.parseText(text);
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 40),
-      children: [
-        const PageHeader(title: '解析下载', subtitle: '粘贴抖音、TikTok、小红书、Instagram、X、哔哩哔哩的分享链接或整段分享文案'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: Tokens.pageGutter),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _inputBox(context),
-              const SizedBox(height: 20),
-              if (_busy)
-                const _Parsing()
-              else if (_ParseMemory.error != null)
-                _ErrorPanel(message: _ParseMemory.error!, onRetry: _parse)
-              else if (_result != null)
-                _ResultPanel(
-                  info: _result!,
-                  added: _ParseMemory.added,
-                  onChanged: () => setState(() => _ParseMemory.added = false),
-                  onDownload: _download,
-                )
-              else
-                const _Intro(),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _inputBox(BuildContext context) {
     final p = context.palette;
-    return Panel(
-      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-      child: Row(
-        children: [
-          Icon(Icons.link_rounded, color: p.textTertiary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: TextField(
-              controller: _input,
-              focusNode: _focus,
-              onSubmitted: (_) => _parse(),
-              style: TextStyle(fontSize: 15, color: p.textPrimary),
-              cursorColor: Tokens.accent,
-              decoration: InputDecoration(
-                hintText: '在这里粘贴链接，回车解析',
-                hintStyle: TextStyle(color: p.textTertiary, fontSize: 15),
-                border: InputBorder.none,
-                isCollapsed: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 10),
+    final history = AppState.I.parse.history;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(Tokens.pageGutter, 16, Tokens.pageGutter, 32),
+      children: [
+        // 粘贴区：虚线框，点击即粘贴解析
+        Hover(
+          onTap: _paste,
+          builder: (_, h) => CustomPaint(
+            painter: _DashedBorder(color: h ? Tokens.accent : p.textTertiary.withValues(alpha: 0.5)),
+            child: Container(
+              height: 200,
+              decoration: BoxDecoration(
+                color: h ? Tokens.accentSoft.withValues(alpha: 0.05) : null,
+                borderRadius: BorderRadius.circular(Tokens.radiusL),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.content_paste_go_rounded, size: 40, color: h ? Tokens.accent : p.textTertiary),
+                  const SizedBox(height: 14),
+                  Text(
+                    '点击这里粘贴并解析',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: p.textPrimary),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '在 App 里点「分享 → 复制链接」，整段分享文案也行；窗口回到前台时会自动识别剪贴板',
+                    style: TextStyle(fontSize: 13, color: p.textSecondary),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      for (final pl in UiPlatform.values)
+                        if (pl != UiPlatform.generic) PlatformTag(pl),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
-          ValueListenableBuilder(
-            valueListenable: _input,
-            builder: (context, v, _) => v.text.isEmpty
-                ? const SizedBox.shrink()
-                : IconBtn(
-                    Icons.close_rounded,
-                    size: 18,
-                    tooltip: '清空',
-                    onTap: () {
-                      _input.clear();
-                      _focus.requestFocus();
-                    },
+        ),
+        const SizedBox(height: 32),
+        Text('最近解析', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: p.textPrimary)),
+        const SizedBox(height: 12),
+        if (history.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Text('这次打开后还没有解析过作品', style: TextStyle(fontSize: 13, color: p.textTertiary)),
+          )
+        else
+          for (final h in history) _HistoryRow(info: h),
+      ],
+    );
+  }
+}
+
+class _HistoryRow extends StatelessWidget {
+  const _HistoryRow({required this.info});
+
+  final UiMediaInfo info;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return Hover(
+      onTap: () => AppState.I.parse.show(info),
+      builder: (_, h) => Container(
+        height: Tokens.rowHeight,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: h ? p.rowHover : null,
+          borderRadius: BorderRadius.circular(Tokens.radiusRow),
+        ),
+        child: Row(
+          children: [
+            NetImage(url: info.cover, platform: info.platform, width: 44, height: 44, radius: Tokens.radiusS),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    info.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 14, color: p.textPrimary),
                   ),
-          ),
-          const SizedBox(width: 8),
-          PillButton(label: '粘贴并解析', icon: Icons.content_paste_rounded, onTap: _busy ? null : _paste),
-          const SizedBox(width: 8),
-          PillButton(label: '解析', primary: true, busy: _busy, onTap: _parse),
-        ],
+                  const SizedBox(height: 4),
+                  Text(info.author ?? '', style: TextStyle(fontSize: 12, color: p.textTertiary)),
+                ],
+              ),
+            ),
+            PlatformTag(info.platform, dense: true),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 80,
+              child: Text(
+                _summary(info),
+                textAlign: TextAlign.right,
+                style: TextStyle(fontSize: 12, color: p.textTertiary),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-String _cleanError(Object e) {
-  var s = e.toString();
-  for (final prefix in ['AnyhowException(', 'Exception: ']) {
-    if (s.startsWith(prefix)) s = s.substring(prefix.length);
-  }
-  if (s.endsWith(')') && e.toString().startsWith('AnyhowException(')) s = s.substring(0, s.length - 1);
-  // anyhow 的回溯信息只留第一行
-  return s.split('\n\nStack backtrace').first.split('\n').first.trim();
+String _summary(UiMediaInfo info) {
+  final v = info.items.where((i) => i.kind == UiMediaKind.video).length;
+  final img = info.items.where((i) => i.kind == UiMediaKind.image).length;
+  return [if (v > 0) '$v 个视频', if (img > 0) '$img 张图'].join(' · ');
 }
+
+class _DashedBorder extends CustomPainter {
+  _DashedBorder({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rrect = RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(Tokens.radiusL));
+    final path = Path()..addRRect(rrect);
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2;
+    for (final m in path.computeMetrics()) {
+      for (double d = 0; d < m.length; d += 10) {
+        canvas.drawPath(m.extractPath(d, d + 5), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorder old) => old.color != color;
+}
+
+// ---------------- 解析中 / 出错 ----------------
 
 class _Parsing extends StatelessWidget {
   const _Parsing();
@@ -217,344 +193,335 @@ class _Parsing extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return Panel(
-      child: Row(
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox.square(dimension: 22, child: CircularProgressIndicator(strokeWidth: 2.4)),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('正在解析…', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: p.textPrimary)),
-                const SizedBox(height: 4),
-                Text(
-                  '抖音、小红书、Instagram 需要在后台用浏览器打开作品页，通常要 5–20 秒',
-                  style: TextStyle(fontSize: 13, color: p.textSecondary),
-                ),
-              ],
-            ),
+          const SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.6, color: Tokens.accent)),
+          const SizedBox(height: 18),
+          Text('正在解析…', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: p.textPrimary)),
+          const SizedBox(height: 6),
+          Text(
+            '抖音、小红书、Instagram 会在后台用浏览器打开作品页，一般 5–20 秒',
+            style: TextStyle(fontSize: 13, color: p.textTertiary),
           ),
+          const SizedBox(height: 18),
+          PillButton(label: '取消', onTap: AppState.I.parse.clear),
         ],
       ),
     );
   }
 }
 
-class _ErrorPanel extends StatelessWidget {
-  const _ErrorPanel({required this.message, required this.onRetry});
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.message});
 
   final String message;
-  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return Panel(
-      child: Row(
-        children: [
-          const Icon(Icons.error_outline_rounded, color: Tokens.danger, size: 26),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    final parse = AppState.I.parse;
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.link_off_rounded, size: 44, color: p.textTertiary),
+            const SizedBox(height: 14),
+            Text('没能解析这个链接', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: p.textPrimary)),
+            const SizedBox(height: 8),
+            SelectableText(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, height: 1.5, color: p.textSecondary),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text('解析失败', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: p.textPrimary)),
-                const SizedBox(height: 4),
-                SelectableText(message, style: TextStyle(fontSize: 13, color: p.textSecondary)),
+                PillButton(label: '重试', icon: Icons.refresh_rounded, primary: true, onTap: () => parse.run(parse.input.text)),
+                const SizedBox(width: 12),
+                PillButton(label: '返回', onTap: parse.clear),
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          PillButton(label: '重试', icon: Icons.refresh_rounded, onTap: onRetry),
-        ],
-      ),
-    );
-  }
-}
-
-/// 还没有解析时：三步说明
-class _Intro extends StatelessWidget {
-  const _Intro();
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    Widget step(IconData icon, String title, String desc) => Expanded(
-      child: Panel(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(color: Tokens.accentSoft, borderRadius: BorderRadius.circular(Tokens.radiusRow)),
-              child: Icon(icon, color: Tokens.accent),
-            ),
-            const SizedBox(height: 14),
-            Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: p.textPrimary)),
-            const SizedBox(height: 6),
-            Text(desc, style: TextStyle(fontSize: 13, height: 1.5, color: p.textSecondary)),
           ],
         ),
       ),
     );
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        step(Icons.ios_share_rounded, '复制分享链接', '在 App 里点「分享 → 复制链接」，整段分享文案也可以直接粘贴'),
-        const SizedBox(width: 16),
-        step(Icons.auto_awesome_rounded, '自动识别', '窗口回到前台时会读取剪贴板，识别到支持的链接就自动解析'),
-        const SizedBox(width: 16),
-        step(Icons.download_rounded, '选好就下', '视频默认最高画质、无水印；图文可以按张勾选，实况图一起保存'),
+  }
+}
+
+// ---------------- 结果 ----------------
+
+class _ResultView extends StatelessWidget {
+  const _ResultView({required this.info});
+
+  final UiMediaInfo info;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    final parse = AppState.I.parse;
+    final n = parse.selected.length;
+    final all = n == info.items.length;
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(Tokens.pageGutter, 16, Tokens.pageGutter, 24),
+          sliver: SliverToBoxAdapter(
+            child: LayoutBuilder(
+              builder: (context, c) {
+                final coverSize = c.maxWidth > 700 ? 176.0 : 128.0;
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    NetImage(
+                      url: info.cover,
+                      platform: info.platform,
+                      width: coverSize,
+                      height: coverSize,
+                      radius: Tokens.radiusL,
+                    ),
+                    const SizedBox(width: 28),
+                    Expanded(
+                      child: SizedBox(
+                        height: coverSize,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 4),
+                            PlatformTag(info.platform),
+                            const SizedBox(height: 10),
+                            Text(
+                              info.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, height: 1.3, color: p.textPrimary),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              [
+                                if (info.author != null) info.author!,
+                                _summary(info),
+                                if (info.durationMs != null) formatDuration(info.durationMs!.toInt()),
+                              ].where((s) => s.isNotEmpty).join('  ·  '),
+                              style: TextStyle(color: p.textSecondary, fontSize: 13),
+                            ),
+                            const Spacer(),
+                            Row(
+                              children: [
+                                PillButton(
+                                  label: parse.added ? '已加入队列' : (all ? '下载全部' : '下载选中 $n 项'),
+                                  icon: parse.added ? Icons.check_rounded : Icons.download_rounded,
+                                  primary: true,
+                                  onTap: n == 0 || parse.added ? null : () => parse.download(),
+                                ),
+                                const SizedBox(width: 12),
+                                if (info.items.length > 1) ...[
+                                  PillButton(
+                                    label: all ? '全不选' : '全选',
+                                    icon: all ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                                    onTap: parse.toggleAll,
+                                  ),
+                                  const SizedBox(width: 12),
+                                ],
+                                if (parse.added)
+                                  PillButton(
+                                    label: '查看下载',
+                                    icon: Icons.downloading_rounded,
+                                    onTap: () => AppState.I.page.value = 'downloading',
+                                  )
+                                else
+                                  PillButton(label: '关闭', icon: Icons.close_rounded, onTap: parse.clear),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: Tokens.pageGutter - 12),
+          sliver: SliverToBoxAdapter(child: const _ListHeader()),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(Tokens.pageGutter - 12, 4, Tokens.pageGutter - 12, 32),
+          sliver: SliverList.builder(
+            itemCount: info.items.length,
+            itemBuilder: (context, i) => _ItemRow(info: info, index: i),
+          ),
+        ),
       ],
     );
   }
 }
 
-class _ResultPanel extends StatelessWidget {
-  const _ResultPanel({required this.info, required this.added, required this.onChanged, required this.onDownload});
+/// 列宽统一定义，表头与行对齐
+class _Cols extends StatelessWidget {
+  const _Cols({required this.index, required this.media, required this.quality, required this.size, required this.action});
+
+  final Widget index, media, quality, size, action;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, c) {
+      final wide = c.maxWidth > 620;
+      return Row(
+        children: [
+          SizedBox(width: 52, child: index),
+          Expanded(flex: 4, child: media),
+          const SizedBox(width: 12),
+          SizedBox(width: wide ? 220 : 150, child: quality),
+          if (wide) SizedBox(width: 90, child: size),
+          SizedBox(width: 56, child: action),
+        ],
+      );
+    },
+  );
+}
+
+class _ListHeader extends StatelessWidget {
+  const _ListHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    final style = TextStyle(color: p.textSecondary, fontSize: 13);
+    return Container(
+      height: 40,
+      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: p.divider))),
+      child: _Cols(
+        index: Text('#', style: style, textAlign: TextAlign.center),
+        media: Text('内容', style: style),
+        quality: Text('清晰度', style: style),
+        size: Text('大小', style: style),
+        action: const SizedBox.shrink(),
+      ),
+    );
+  }
+}
+
+class _ItemRow extends StatelessWidget {
+  const _ItemRow({required this.info, required this.index});
 
   final UiMediaInfo info;
-  final bool added;
-  final VoidCallback onChanged;
-  final VoidCallback onDownload;
+  final int index;
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    final sel = _ParseMemory.selected;
-    final counts = <UiMediaKind, int>{};
-    for (final it in info.items) {
-      counts[it.kind] = (counts[it.kind] ?? 0) + 1;
-    }
-    final summary = [
-      if ((counts[UiMediaKind.video] ?? 0) > 0) '${counts[UiMediaKind.video]} 个视频',
-      if ((counts[UiMediaKind.image] ?? 0) > 0) '${counts[UiMediaKind.image]} 张图片',
-      if ((counts[UiMediaKind.livePhoto] ?? 0) > 0) '${counts[UiMediaKind.livePhoto]} 段实况',
-      if ((counts[UiMediaKind.audio] ?? 0) > 0) '背景音乐',
-    ].join(' · ');
-    final allSelected = sel.length == info.items.length;
-    return Panel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final parse = AppState.I.parse;
+    final item = info.items[index];
+    final sel = parse.selected.contains(index);
+    final vi = (parse.variant[index] ?? 0).clamp(0, item.variants.isEmpty ? 0 : item.variants.length - 1);
+    final v = item.variants.isEmpty ? null : item.variants[vi];
+    final (icon, kind) = switch (item.kind) {
+      UiMediaKind.video => (Icons.play_circle_outline_rounded, '视频'),
+      UiMediaKind.image => (Icons.image_outlined, '图片'),
+      UiMediaKind.livePhoto => (Icons.motion_photos_on_outlined, '实况'),
+      UiMediaKind.audio => (Icons.music_note_rounded, '背景音乐'),
+    };
+    return Hover(
+      onTap: () => parse.toggle(index),
+      builder: (_, h) => Container(
+        height: Tokens.rowHeight,
+        decoration: BoxDecoration(
+          color: h ? p.rowHover : null,
+          borderRadius: BorderRadius.circular(Tokens.radiusRow),
+        ),
+        child: _Cols(
+          index: Center(child: _Check(selected: sel, hovered: h, index: index)),
+          media: Row(
             children: [
-              NetImage(url: info.cover, platform: info.platform, width: 96, height: 128, radius: Tokens.radiusRow),
-              const SizedBox(width: 18),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        PlatformTag(info.platform),
-                        if (info.durationMs != null) ...[
-                          const SizedBox(width: 8),
-                          Text(
-                            formatDuration(info.durationMs!.toInt()),
-                            style: TextStyle(fontSize: 12, color: p.textTertiary),
-                          ),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    SelectableText(
-                      info.title,
-                      maxLines: 3,
-                      style: TextStyle(fontSize: 17, height: 1.4, fontWeight: FontWeight.w600, color: p.textPrimary),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      [if (info.author != null) info.author!, summary].join('  ·  '),
-                      style: TextStyle(fontSize: 13, color: p.textSecondary),
-                    ),
-                  ],
+              NetImage(
+                url: item.thumbnail,
+                platform: info.platform,
+                width: 40,
+                height: 48,
+                radius: Tokens.radiusS,
+                icon: icon,
+              ),
+              const SizedBox(width: 12),
+              Icon(icon, size: 16, color: sel ? Tokens.accent : p.textTertiary),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  item.kind == UiMediaKind.audio && v != null ? v.label : '$kind ${index + 1}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 14, color: sel ? Tokens.accent : p.textPrimary),
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: [
-              for (var i = 0; i < info.items.length; i++)
-                _ItemTile(
-                  platform: info.platform,
-                  item: info.items[i],
-                  index: i,
-                  selected: sel.contains(i),
-                  variant: _ParseMemory.variant[i] ?? 0,
-                  onToggle: () {
-                    sel.contains(i) ? sel.remove(i) : sel.add(i);
-                    onChanged();
-                  },
-                  onVariant: (v) {
-                    _ParseMemory.variant[i] = v;
-                    onChanged();
-                  },
-                ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              if (info.items.length > 1)
-                PillButton(
-                  label: allSelected ? '全不选' : '全选',
-                  icon: allSelected ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
-                  onTap: () {
-                    if (allSelected) {
-                      sel.clear();
-                    } else {
-                      sel.addAll(List.generate(info.items.length, (i) => i));
-                    }
-                    onChanged();
-                  },
-                ),
-              const Spacer(),
-              if (added) ...[
-                PillButton(
-                  label: '查看下载',
-                  icon: Icons.downloading_rounded,
-                  onTap: () => AppState.I.page.value = 'downloading',
-                ),
-                const SizedBox(width: 10),
+              if (v != null) ...[
+                const SizedBox(width: 8),
+                Text(v.ext.toUpperCase(), style: TextStyle(fontSize: 11, color: p.textTertiary)),
               ],
-              PillButton(
-                label: added ? '已加入队列' : '下载选中的 ${sel.length} 项',
-                icon: added ? Icons.check_rounded : Icons.download_rounded,
-                primary: true,
-                height: 40,
-                onTap: sel.isEmpty || added ? null : onDownload,
-              ),
             ],
           ),
-        ],
+          quality: item.variants.length > 1
+              ? Align(alignment: Alignment.centerLeft, child: _QualityMenu(item: item, index: index, selected: vi))
+              : Text(
+                  v == null || item.kind == UiMediaKind.audio ? '—' : v.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: p.textSecondary),
+                ),
+          size: Text(
+            v?.size == null ? '—' : formatBytes(v!.size!.toInt()),
+            style: TextStyle(fontSize: 13, color: p.textTertiary),
+          ),
+          action: h
+              ? IconBtn(Icons.download_rounded, tooltip: '只下载这一项', onTap: () => parse.download(only: [index]))
+              : const SizedBox.shrink(),
+        ),
       ),
     );
   }
 }
 
-class _ItemTile extends StatelessWidget {
-  const _ItemTile({
-    required this.platform,
-    required this.item,
-    required this.index,
-    required this.selected,
-    required this.variant,
-    required this.onToggle,
-    required this.onVariant,
-  });
+/// 序号列：未选中显示序号，悬停或选中显示勾选框
+class _Check extends StatelessWidget {
+  const _Check({required this.selected, required this.hovered, required this.index});
 
-  final UiPlatform platform;
+  final bool selected;
+  final bool hovered;
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    if (!selected && !hovered) {
+      return Text(
+        (index + 1).toString().padLeft(2, '0'),
+        style: TextStyle(color: p.textTertiary, fontSize: 13, fontFeatures: const [FontFeature.tabularFigures()]),
+      );
+    }
+    return Container(
+      width: 18,
+      height: 18,
+      decoration: BoxDecoration(
+        color: selected ? Tokens.accent : null,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: selected ? Tokens.accent : p.textTertiary, width: 1.4),
+      ),
+      child: selected ? const Icon(Icons.check_rounded, size: 14, color: Colors.white) : null,
+    );
+  }
+}
+
+class _QualityMenu extends StatelessWidget {
+  const _QualityMenu({required this.item, required this.index, required this.selected});
+
   final UiMediaItem item;
   final int index;
-  final bool selected;
-  final int variant;
-  final VoidCallback onToggle;
-  final ValueChanged<int> onVariant;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    final (icon, label) = switch (item.kind) {
-      UiMediaKind.video => (Icons.play_arrow_rounded, '视频'),
-      UiMediaKind.image => (Icons.image_rounded, '图片'),
-      UiMediaKind.livePhoto => (Icons.motion_photos_on_rounded, '实况'),
-      UiMediaKind.audio => (Icons.music_note_rounded, '音乐'),
-    };
-    final v = item.variants.isEmpty ? null : item.variants[variant.clamp(0, item.variants.length - 1)];
-    const w = 172.0;
-    return SizedBox(
-      width: w,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Hover(
-            onTap: onToggle,
-            builder: (_, h) => Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(Tokens.radiusRow + 2),
-                border: Border.all(color: selected ? Tokens.accent : Colors.transparent, width: 2),
-              ),
-              child: Stack(
-                children: [
-                  NetImage(
-                    url: item.thumbnail,
-                    platform: platform,
-                    width: w - 4,
-                    height: (w - 4) * 4 / 3,
-                    radius: Tokens.radiusRow,
-                    icon: icon,
-                  ),
-                  Positioned(
-                    left: 8,
-                    top: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(icon, size: 13, color: Colors.white),
-                          const SizedBox(width: 3),
-                          Text('$label ${index + 1}', style: const TextStyle(fontSize: 11, color: Colors.white)),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    right: 8,
-                    top: 8,
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        color: selected ? Tokens.accent : Colors.black.withValues(alpha: h ? 0.5 : 0.35),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 1.5),
-                      ),
-                      child: selected ? const Icon(Icons.check_rounded, size: 15, color: Colors.white) : null,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          if (v != null)
-            item.variants.length > 1
-                ? _VariantMenu(item: item, selected: variant, onSelected: onVariant)
-                : Text(
-                    _variantText(v),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: p.textSecondary),
-                  ),
-        ],
-      ),
-    );
-  }
-}
-
-String _variantText(UiVariant v) {
-  final size = v.size == null ? '' : ' · ${formatBytes(v.size!.toInt())}';
-  return '${v.label}$size';
-}
-
-class _VariantMenu extends StatelessWidget {
-  const _VariantMenu({required this.item, required this.selected, required this.onSelected});
-
-  final UiMediaItem item;
   final int selected;
-  final ValueChanged<int> onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -564,7 +531,7 @@ class _VariantMenu extends StatelessWidget {
       position: PopupMenuPosition.under,
       color: p.surface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Tokens.radiusM)),
-      onSelected: onSelected,
+      onSelected: (v) => AppState.I.parse.pick(index, v),
       itemBuilder: (_) => [
         for (var i = 0; i < item.variants.length; i++)
           PopupMenuItem(
@@ -576,23 +543,31 @@ class _VariantMenu extends StatelessWidget {
                   width: 22,
                   child: i == selected ? const Icon(Icons.check_rounded, size: 16, color: Tokens.accent) : null,
                 ),
-                Text(_variantText(item.variants[i]), style: TextStyle(fontSize: 13, color: p.textPrimary)),
+                Text(item.variants[i].label, style: TextStyle(fontSize: 13, color: p.textPrimary)),
+                if (item.variants[i].size != null) ...[
+                  const SizedBox(width: 10),
+                  Text(
+                    formatBytes(item.variants[i].size!.toInt()),
+                    style: TextStyle(fontSize: 12, color: p.textTertiary),
+                  ),
+                ],
               ],
             ),
           ),
       ],
       child: Container(
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        height: 28,
+        padding: const EdgeInsets.only(left: 10, right: 4),
         decoration: BoxDecoration(color: p.field, borderRadius: BorderRadius.circular(Tokens.radiusS)),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
+            Flexible(
               child: Text(
-                _variantText(item.variants[selected.clamp(0, item.variants.length - 1)]),
+                item.variants[selected].label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12, color: p.textPrimary),
+                style: TextStyle(fontSize: 13, color: p.textPrimary),
               ),
             ),
             Icon(Icons.expand_more_rounded, size: 16, color: p.textSecondary),

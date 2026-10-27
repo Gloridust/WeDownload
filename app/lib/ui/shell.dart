@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../src/rust/api/core.dart' as core;
 import '../src/rust/api/types.dart';
 import '../state.dart';
 import '../theme.dart';
@@ -10,6 +12,7 @@ import 'brand.dart';
 import 'pages/downloads_page.dart';
 import 'pages/parse_page.dart';
 import 'pages/settings_page.dart';
+import 'status_bar.dart';
 import 'widgets.dart';
 
 bool get isDesktop => Platform.isLinux || Platform.isWindows || Platform.isMacOS;
@@ -36,7 +39,14 @@ class _ShellState extends State<Shell> with WindowListener {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3)));
+        ..showSnackBar(
+          SnackBar(
+            content: Text(msg),
+            duration: const Duration(seconds: 3),
+            // 抬到底部状态栏上方
+            margin: const EdgeInsets.only(bottom: Tokens.statusBarHeight + 12),
+          ),
+        );
     });
   }
 
@@ -63,7 +73,7 @@ class _ShellState extends State<Shell> with WindowListener {
     final p = context.palette;
     return LayoutBuilder(
       builder: (context, c) {
-        final compact = c.maxWidth < 720;
+        final compact = c.maxWidth < 760;
         final borderColor = Theme.of(context).brightness == Brightness.dark
             ? Colors.white.withValues(alpha: 0.14)
             : p.textTertiary.withValues(alpha: 0.45);
@@ -73,37 +83,46 @@ class _ShellState extends State<Shell> with WindowListener {
           drawer: compact ? Drawer(width: 240, backgroundColor: p.sidebar, child: const Sidebar()) : null,
           body: Stack(
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+              Column(
                 children: [
-                  if (!compact) ...[
-                    const SizedBox(width: Tokens.sidebarWidth, child: Sidebar()),
-                    VerticalDivider(width: 1, color: p.divider),
-                  ],
                   Expanded(
-                    child: Column(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        TopBar(onMenu: compact ? () => _scaffold.currentState?.openDrawer() : null),
+                        if (!compact)
+                          Container(
+                            width: Tokens.sidebarWidth,
+                            decoration: BoxDecoration(border: Border(right: BorderSide(color: p.divider))),
+                            child: const Sidebar(),
+                          ),
                         Expanded(
-                          child: ValueListenableBuilder(
-                            valueListenable: AppState.I.page,
-                            builder: (context, page, _) => AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 160),
-                              child: KeyedSubtree(
-                                key: ValueKey(page),
-                                child: switch (page) {
-                                  'downloading' => const DownloadsPage(finished: false),
-                                  'finished' => const DownloadsPage(finished: true),
-                                  'settings' => const SettingsPage(),
-                                  _ => const ParsePage(),
-                                },
+                          child: Column(
+                            children: [
+                              TopBar(onMenu: compact ? () => _scaffold.currentState?.openDrawer() : null),
+                              Expanded(
+                                child: ValueListenableBuilder(
+                                  valueListenable: AppState.I.page,
+                                  builder: (context, page, _) => AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 160),
+                                    child: KeyedSubtree(
+                                      key: ValueKey(page),
+                                      child: switch (page) {
+                                        'downloading' => const DownloadsPage(finished: false),
+                                        'finished' => const DownloadsPage(finished: true),
+                                        'settings' => const SettingsPage(),
+                                        _ => const ParsePage(),
+                                      },
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
+                  const StatusBar(),
                 ],
               ),
               // 无边框窗口在 Linux 上加一圈细描边，避免和相邻白色窗口糊在一起
@@ -140,22 +159,125 @@ class DragArea extends StatelessWidget {
   }
 }
 
-class TopBar extends StatelessWidget {
+class TopBar extends StatefulWidget {
   const TopBar({super.key, this.onMenu});
 
   final VoidCallback? onMenu;
 
   @override
+  State<TopBar> createState() => _TopBarState();
+}
+
+class _TopBarState extends State<TopBar> {
+  final _focus = FocusNode();
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _paste() async {
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
+    if (text.isEmpty) {
+      AppState.I.notify('剪贴板是空的');
+      return;
+    }
+    AppState.I.ignoreClipboard(text);
+    AppState.I.parseText(text);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final p = context.palette;
+    final parse = AppState.I.parse;
     return DragArea(
       child: SizedBox(
-        height: Tokens.topBarHeight,
+        height: Tokens.topBarHeight + 8,
         child: Row(
           children: [
-            const SizedBox(width: 16),
-            if (onMenu != null) IconBtn(Icons.menu_rounded, onTap: onMenu),
-            const Spacer(),
+            const SizedBox(width: 20),
+            if (widget.onMenu != null) ...[IconBtn(Icons.menu_rounded, onTap: widget.onMenu), const SizedBox(width: 8)],
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 440),
+                  // 淡淡的粉—紫—蓝渐变底 + 细边框
+                  child: ListenableBuilder(
+                    listenable: _focus,
+                    builder: (context, _) => Container(
+                      height: 36,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          begin: Alignment.centerRight,
+                          end: Alignment.centerLeft,
+                          colors: [Color(0x14F574BA), Color(0x14BD8CFF), Color(0x144E8CEA)],
+                          stops: [0.07, 0.49, 0.99],
+                        ),
+                        border: Border.all(
+                          color: _focus.hasFocus ? Tokens.accent.withValues(alpha: 0.4) : p.hoverStrong,
+                        ),
+                        borderRadius: BorderRadius.circular(Tokens.radiusM),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: parse.input,
+                              focusNode: _focus,
+                              onSubmitted: AppState.I.parseText,
+                              style: TextStyle(fontSize: 14, color: p.textPrimary),
+                              cursorColor: p.textPrimary,
+                              decoration: InputDecoration(
+                                hintText: '粘贴分享链接或整段分享文案，回车解析',
+                                hintStyle: TextStyle(color: p.textPrimary.withValues(alpha: 0.4), fontSize: 14),
+                                prefixIcon: Padding(
+                                  padding: const EdgeInsets.only(left: 14, right: 8),
+                                  child: Icon(Icons.link_rounded, size: 18, color: p.textPrimary.withValues(alpha: 0.4)),
+                                ),
+                                prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+                                isCollapsed: true,
+                                contentPadding: const EdgeInsets.only(right: 8, top: 9, bottom: 9),
+                                border: InputBorder.none,
+                              ),
+                            ),
+                          ),
+                          Tooltip(
+                            message: '粘贴并解析',
+                            child: Hover(
+                              onTap: _paste,
+                              builder: (_, h) => Container(
+                                height: 36,
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                decoration: BoxDecoration(
+                                  border: Border(left: BorderSide(color: p.hoverStrong)),
+                                  color: h ? p.hover : null,
+                                  borderRadius: const BorderRadius.horizontal(right: Radius.circular(Tokens.radiusM)),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.content_paste_rounded, size: 16, color: p.textSecondary),
+                                    const SizedBox(width: 4),
+                                    Text('粘贴', style: TextStyle(fontSize: 13, color: p.textSecondary)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            IconBtn(Icons.folder_open_outlined, tooltip: '打开下载文件夹', onTap: () {
+              final dir = AppState.I.settings.value?.downloadDir;
+              if (dir != null) core.openPath(path: dir).catchError((_) => AppState.I.notify('下载文件夹还不存在'));
+            }),
+            IconBtn(Icons.settings_outlined, tooltip: '设置', onTap: () => AppState.I.page.value = 'settings'),
             if (isDesktop && !Platform.isMacOS) ...[
               Container(width: 1, height: 18, margin: const EdgeInsets.symmetric(horizontal: 10), color: p.divider),
               IconBtn(Icons.remove_rounded, onTap: windowManager.minimize, tooltip: '最小化'),
@@ -176,6 +298,7 @@ class TopBar extends StatelessWidget {
   }
 }
 
+/// 左侧导航：解析 / 下载 两组，再按平台列出已下载的内容
 class Sidebar extends StatelessWidget {
   const Sidebar({super.key});
 
@@ -192,7 +315,7 @@ class Sidebar extends StatelessWidget {
               height: Tokens.topBarHeight + 8,
               child: Row(
                 children: [
-                  SizedBox(width: Platform.isMacOS ? 80 : 22),
+                  SizedBox(width: Platform.isMacOS ? 80 : 24),
                   const AppLogo(size: 28),
                   const SizedBox(width: 10),
                   Text(kAppName, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: p.textPrimary)),
@@ -208,39 +331,80 @@ class Sidebar extends StatelessWidget {
                     .where((t) => t.status == UiTaskStatus.running || t.status == UiTaskStatus.queued)
                     .length;
                 final failed = tasks.where((t) => t.status == UiTaskStatus.failed).length;
-                final done = tasks.where((t) => t.status == UiTaskStatus.done).length;
+                final done = tasks.where((t) => t.status == UiTaskStatus.done).toList();
+                final perPlatform = <UiPlatform, int>{};
+                for (final t in done) {
+                  perPlatform[t.platform] = (perPlatform[t.platform] ?? 0) + 1;
+                }
                 return ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  padding: const EdgeInsets.fromLTRB(24, 12, 16, 16),
                   children: [
-                    const NavItem(icon: Icons.link_rounded, label: '解析下载', page: 'parse'),
+                    const NavItem(icon: Icons.link_rounded, label: '解析', page: 'parse'),
                     NavItem(
                       icon: Icons.downloading_rounded,
                       label: '正在下载',
                       page: 'downloading',
-                      badge: active > 0 ? '$active' : (failed > 0 ? '!' : null),
+                      trailing: active > 0 ? '$active' : (failed > 0 ? '$failed 失败' : null),
+                      trailingHot: active > 0 || failed > 0,
                     ),
                     NavItem(
                       icon: Icons.task_alt_rounded,
-                      label: '已完成',
+                      label: '已下载',
                       page: 'finished',
-                      badge: done > 0 ? '$done' : null,
-                      quietBadge: true,
+                      filter: null,
+                      trailing: done.isEmpty ? null : '${done.length}',
                     ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                      child: Divider(height: 1, color: p.divider),
-                    ),
-                    const NavItem(icon: Icons.settings_rounded, label: '设置', page: 'settings'),
+                    const _Divider(),
+                    const _GroupHeader('按平台'),
+                    for (final pl in UiPlatform.values)
+                      if (perPlatform[pl] != null)
+                        NavItem(
+                          icon: null,
+                          dotColor: PlatformStyle.of(pl).color,
+                          label: PlatformStyle.of(pl).name,
+                          page: 'finished',
+                          filter: pl,
+                          trailing: '${perPlatform[pl]}',
+                        ),
+                    if (perPlatform.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 0),
+                        child: Text(
+                          '下载过的作品会按平台列在这里',
+                          style: TextStyle(fontSize: 12, height: 1.5, color: p.textTertiary),
+                        ),
+                      ),
                   ],
                 );
               },
             ),
           ),
-          const _SupportedFooter(),
         ],
       ),
     );
   }
+}
+
+class _Divider extends StatelessWidget {
+  const _Divider();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 12, 8, 12),
+    child: Divider(height: 1, color: context.palette.divider),
+  );
+}
+
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+    child: Text(text, style: TextStyle(fontSize: 12, color: context.palette.textTertiary)),
+  );
 }
 
 class NavItem extends StatelessWidget {
@@ -249,33 +413,43 @@ class NavItem extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.page,
-    this.badge,
-    this.quietBadge = false,
+    this.filter,
+    this.dotColor,
+    this.trailing,
+    this.trailingHot = false,
   });
 
-  final IconData icon;
+  /// 为空时显示 [dotColor] 色的圆点（平台分组用）
+  final IconData? icon;
   final String label;
   final String page;
-  final String? badge;
-  final bool quietBadge;
+
+  /// 已下载页的平台筛选；null 表示全部
+  final UiPlatform? filter;
+  final Color? dotColor;
+  final String? trailing;
+  final bool trailingHot;
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return ValueListenableBuilder(
-      valueListenable: AppState.I.page,
-      builder: (context, cur, _) {
-        final sel = cur == page;
+    final app = AppState.I;
+    return ListenableBuilder(
+      listenable: Listenable.merge([app.page, app.platformFilter]),
+      builder: (context, _) {
+        final sel = app.page.value == page && (page != 'finished' || app.platformFilter.value == filter);
+        // 悬停底色即时出现、即时消失，不做渐变（渐变在快速划过时会拖出残影）
         return Padding(
           padding: const EdgeInsets.only(bottom: 4),
           child: Hover(
             onTap: () {
               Scaffold.maybeOf(context)?.closeDrawer();
-              AppState.I.page.value = page;
+              app.platformFilter.value = filter;
+              app.page.value = page;
             },
             builder: (_, h) => Container(
-              height: 40,
-              padding: const EdgeInsets.only(left: 12, right: 10),
+              height: 36,
+              padding: const EdgeInsets.only(left: 8, right: 8),
               decoration: BoxDecoration(
                 color: sel ? null : (h ? p.hover : null),
                 gradient: sel ? Tokens.accentGradient : null,
@@ -283,34 +457,43 @@ class NavItem extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  Icon(icon, size: 20, color: sel ? Colors.white : p.textSecondary),
-                  const SizedBox(width: 10),
+                  icon != null
+                      ? Icon(icon, size: 20, color: sel ? Colors.white : p.textSecondary)
+                      : SizedBox(
+                          width: 20,
+                          child: Center(
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: sel ? Colors.white : dotColor,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.6), width: 0.5),
+                              ),
+                            ),
+                          ),
+                        ),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 14,
-                        color: sel ? Colors.white : p.textPrimary.withValues(alpha: 0.85),
+                        height: 18 / 14,
+                        color: sel ? Colors.white : p.textPrimary.withValues(alpha: 0.8),
                         fontWeight: sel ? FontWeight.w500 : FontWeight.w400,
                       ),
                     ),
                   ),
-                  if (badge != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: sel
-                            ? Colors.white.withValues(alpha: 0.25)
-                            : (quietBadge ? p.hoverStrong : (badge == '!' ? Tokens.danger : Tokens.accent)),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        badge!,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: sel || !quietBadge ? Colors.white : p.textSecondary,
-                        ),
+                  if (trailing != null)
+                    Text(
+                      trailing!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: trailingHot ? FontWeight.w600 : FontWeight.w400,
+                        color: sel ? Colors.white : (trailingHot ? Tokens.accent : p.textTertiary),
                       ),
                     ),
                 ],
@@ -319,39 +502,6 @@ class NavItem extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-/// 侧栏底部：支持的平台
-class _SupportedFooter extends StatelessWidget {
-  const _SupportedFooter();
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    const shown = [
-      UiPlatform.douyin,
-      UiPlatform.tiktok,
-      UiPlatform.xiaohongshu,
-      UiPlatform.instagram,
-      UiPlatform.x,
-      UiPlatform.bilibili,
-    ];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 8, 16, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('支持的平台', style: TextStyle(fontSize: 12, color: p.textTertiary)),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [for (final s in shown) PlatformTag(s, dense: true)],
-          ),
-        ],
-      ),
     );
   }
 }

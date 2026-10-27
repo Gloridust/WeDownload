@@ -11,6 +11,8 @@ Future<void> maybeRunAutotest() async {
   if (page != null) AppState.I.page.value = page;
   final link = Platform.environment['WEDOWNLOAD_AUTOTEST'];
   if (link == null || link.isEmpty) return;
+  // 记录页面切换，方便确认界面没有自己跳走
+  AppState.I.page.addListener(() => stdout.writeln('[autotest] page -> ${AppState.I.page.value}'));
   try {
     final info = await core.extract(input: link);
     final picks = [

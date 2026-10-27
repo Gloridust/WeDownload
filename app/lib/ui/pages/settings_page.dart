@@ -22,7 +22,7 @@ class SettingsPage extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.only(bottom: 40),
           children: [
-            const PageHeader(title: '设置'),
+            const PageHeader(title: '设置', subtitle: '所有解析都在本机完成，不经过任何服务器'),
             _Section(
               title: '下载',
               children: [
@@ -192,25 +192,18 @@ class _Section extends StatelessWidget {
   Widget build(BuildContext context) {
     final p = context.palette;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Tokens.pageGutter, 0, Tokens.pageGutter, 24),
+      padding: const EdgeInsets.fromLTRB(Tokens.pageGutter, 0, Tokens.pageGutter, 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 10),
-            child: Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: p.textSecondary)),
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(title, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: p.textPrimary)),
           ),
-          Panel(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-            child: Column(
-              children: [
-                for (var i = 0; i < children.length; i++) ...[
-                  if (i > 0) Divider(height: 1, color: p.divider),
-                  children[i],
-                ],
-              ],
-            ),
-          ),
+          for (var i = 0; i < children.length; i++) ...[
+            if (i > 0) Divider(height: 1, color: p.divider),
+            children[i],
+          ],
         ],
       ),
     );

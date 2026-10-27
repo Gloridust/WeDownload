@@ -4,16 +4,19 @@ import 'src/rust/api/types.dart';
 
 /// 设计规范：颜色、圆角、尺寸集中在这里，页面里不写魔法数。
 class Tokens {
-  static const accent = Color(0xFF4F6BFF);
-  static const accentSoft = Color(0x1A4F6BFF);
+  static const accent = Color(0xFFFC3D49);
+  static const accentSoft = Color(0x1AFC3D49);
 
-  /// 选中项、主按钮用的蓝紫渐变
+  /// 选中项、主按钮用的红色渐变（右侧偏橙红，左侧偏玫红），与网易云Yet 同一套
   static const accentGradient = LinearGradient(
-    begin: Alignment.centerLeft,
-    end: Alignment.centerRight,
-    colors: [Color(0xFF4F6BFF), Color(0xFF6A5CFF), Color(0xFF8A5CF6)],
-    stops: [0, 0.6, 1],
+    begin: Alignment.centerRight,
+    end: Alignment.centerLeft,
+    colors: [Color(0xFFFC3D49), Color(0xFFFC3D49), Color(0xFFFC3B5B)],
+    stops: [0, 0.26, 0.99],
   );
+
+  /// 悬停变化即时生效，只有少数需要过渡的地方用动画
+  static const easeInOut = Cubic(0.65, 0, 0.35, 1);
 
   static const success = Color(0xFF1FB57A);
   static const danger = Color(0xFFF0484E);
@@ -24,8 +27,10 @@ class Tokens {
   static const radiusL = 14.0;
 
   static const pageGutter = 36.0;
-  static const sidebarWidth = 220.0;
+  static const sidebarWidth = 228.0;
   static const topBarHeight = 64.0;
+  static const statusBarHeight = 72.0;
+  static const rowHeight = 64.0;
 }
 
 /// 随明暗主题变化的颜色
@@ -37,6 +42,7 @@ class Palette extends ThemeExtension<Palette> {
     required this.surface,
     required this.hover,
     required this.hoverStrong,
+    required this.rowHover,
     required this.textPrimary,
     required this.textSecondary,
     required this.textTertiary,
@@ -50,6 +56,9 @@ class Palette extends ThemeExtension<Palette> {
   final Color surface;
   final Color hover;
   final Color hoverStrong;
+
+  /// 列表行悬停：浅色主题下是白底卡片
+  final Color rowHover;
   final Color textPrimary;
   final Color textSecondary;
   final Color textTertiary;
@@ -64,6 +73,7 @@ class Palette extends ThemeExtension<Palette> {
     surface: Colors.white,
     hover: Color(0x0F283248),
     hoverStrong: Color(0x1A283248),
+    rowHover: Colors.white,
     textPrimary: Color(0xFF283248),
     textSecondary: Color(0x99283248),
     textTertiary: Color(0x80283248),
@@ -78,6 +88,7 @@ class Palette extends ThemeExtension<Palette> {
     surface: Color(0xFF22232A),
     hover: Color(0x12FFFFFF),
     hoverStrong: Color(0x1FFFFFFF),
+    rowHover: Color(0x12FFFFFF),
     textPrimary: Color(0xFFE9EAEE),
     textSecondary: Color(0x99FFFFFF),
     textTertiary: Color(0x73FFFFFF),
@@ -99,6 +110,7 @@ class Palette extends ThemeExtension<Palette> {
       surface: l(surface, other.surface),
       hover: l(hover, other.hover),
       hoverStrong: l(hoverStrong, other.hoverStrong),
+      rowHover: l(rowHover, other.rowHover),
       textPrimary: l(textPrimary, other.textPrimary),
       textSecondary: l(textSecondary, other.textSecondary),
       textTertiary: l(textTertiary, other.textTertiary),
